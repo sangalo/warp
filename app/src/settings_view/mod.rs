@@ -663,6 +663,10 @@ pub mod flags {
     pub const AUTO_OPEN_RICH_INPUT_ON_CLI_AGENT_START_FLAG: &str =
         "AutoOpenRichInputOnCLIAgentStart";
     pub const AUTO_DISMISS_RICH_INPUT_AFTER_SUBMIT_FLAG: &str = "AutoDismissRichInputAfterSubmit";
+    pub const RESUME_CLI_AGENTS_ON_RESTART_FLAG: &str = "ResumeCLIAgentsOnRestart";
+    pub const CLI_AGENT_SOUND_WHEN_WAITING_FLAG: &str = "CLIAgentSoundWhenWaiting";
+    pub const CLI_AGENT_SOUND_WHEN_FINISHED_FLAG: &str = "CLIAgentSoundWhenFinished";
+    pub const CLI_AGENT_SOUND_WHEN_FAILED_FLAG: &str = "CLIAgentSoundWhenFailed";
     pub const ENABLE_WARP_DRIVE: &str = "EnableWarpDrive";
     // Tools panel settings
     pub const SHOW_CONVERSATION_HISTORY: &str = "ShowConversationHistory";

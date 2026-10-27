@@ -3,6 +3,7 @@ use warpui::AppContext;
 use crate::context_chips::display_chip::GitLineChanges;
 use crate::context_chips::{ContextChipKind, git_line_changes_from_chips};
 use crate::terminal::TerminalView;
+use crate::terminal::model::BlockId;
 
 impl TerminalView {
     fn prompt_chip_value(&self, chip_kind: &ContextChipKind, ctx: &AppContext) -> Option<String> {
@@ -34,12 +35,27 @@ impl TerminalView {
     }
 
     pub fn current_git_branch(&self, ctx: &AppContext) -> Option<String> {
-        self.prompt_chip_value(&ContextChipKind::ShellGitBranch, ctx)
-            .or_else(|| {
-                self.git_status_metadata(ctx)
-                    .map(|metadata| metadata.current_branch_name.clone())
-                    .filter(|branch| !branch.trim().is_empty())
-            })
+        // The repository watcher comes first because the prompt chip only refreshes when the shell
+        // prints a new prompt, so it keeps the branch from when a long-running command, such as a
+        // CLI agent that switches branches itself, was started.
+        self.git_status_metadata(ctx)
+            .map(|metadata| metadata.current_branch_name.clone())
+            .filter(|branch| !branch.trim().is_empty())
+            .or_else(|| self.prompt_chip_value(&ContextChipKind::ShellGitBranch, ctx))
+    }
+
+    /// The active block's id, whether its command is still running, and its last `max_rows` rows of
+    /// output.
+    pub fn active_block_output_tail(&self, max_rows: usize) -> (BlockId, bool, String) {
+        let model = self.model.lock();
+        let block = model.block_list().active_block();
+        (
+            block.id().clone(),
+            block.is_executing(),
+            block
+                .output_grid()
+                .contents_to_string(false, Some(max_rows)),
+        )
     }
 
     pub fn last_completed_command_text(&self) -> Option<String> {

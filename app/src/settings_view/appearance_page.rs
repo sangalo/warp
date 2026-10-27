@@ -80,7 +80,7 @@ use crate::terminal::{
 };
 use crate::themes::theme::{self, RespectSystemTheme, SelectedSystemThemes, ThemeKind, WarpTheme};
 use crate::themes::theme_chooser::ThemeChooserMode;
-use crate::ui_components::color_dot::{TAB_COLOR_OPTIONS, render_color_dot};
+use crate::ui_components::color_dot::{TAB_COLOR_OPTIONS, render_color_dot, vivid_tab_color};
 use crate::ui_components::icons::Icon;
 use crate::user_config::WarpConfig;
 use crate::util::bindings;
@@ -5371,7 +5371,7 @@ impl SettingsWidget for DirectoryTabColorsWidget {
                 };
                 let dot_color = match ansi_id {
                     None => pathfinder_color::ColorU::transparent_black(),
-                    Some(id) => id.to_ansi_color(&theme.terminal_colors().normal).into(),
+                    Some(id) => vivid_tab_color(id),
                 };
                 let is_selected = current_color == tab_color;
                 let tooltip_text = match ansi_id {

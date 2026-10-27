@@ -387,6 +387,9 @@ pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_TOP_PADDING: f32 = 10.;
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_BOTTOM_PADDING: f32 = 8.;
 pub(super) const CLI_AGENT_RICH_INPUT_HINT_TEXT: &str = "Tell the agent what to build...";
 
+/// How long [`Input::set_locked_pending_command`] keeps the input locked at most.
+const LOCKED_PENDING_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
 const CLOUD_MODE_V2_HINT_TEXT: &str = "Kick off a cloud agent";
 const SHORT_CIRCUIT_HIGHLIGHTING_ACTIONS: [Option<PlainTextEditorViewAction>; 7] = [
     Some(PlainTextEditorViewAction::Space),
@@ -7386,12 +7389,13 @@ impl Input {
             return;
         }
 
-        self.try_execute_command(&command, ctx);
-        self.has_pending_command = false;
-
+        // Unlocked before executing so that executing can clear the buffer of a command set with
+        // `set_locked_pending_command`.
         self.editor.update(ctx, |editor, ctx| {
             editor.set_interaction_state(InteractionState::Editable, ctx);
         });
+        self.try_execute_command(&command, ctx);
+        self.has_pending_command = false;
     }
 
     /// Try to execute a command in the local session that was
@@ -13207,6 +13211,28 @@ impl Input {
     pub fn set_pending_command(&mut self, exec: &str, ctx: &mut ViewContext<Self>) {
         self.has_pending_command = true;
         self.system_insert(exec, ctx);
+    }
+
+    /// Like [`Self::set_pending_command`], but the input ignores typing until the command runs, so
+    /// keystrokes sent while the session starts cannot alter the command.
+    ///
+    /// If the command has not run after [`LOCKED_PENDING_COMMAND_TIMEOUT`], the input is unlocked
+    /// anyway, because a pane nobody can type into is worse than an altered command.
+    pub fn set_locked_pending_command(&mut self, exec: &str, ctx: &mut ViewContext<Self>) {
+        self.set_pending_command(exec, ctx);
+        self.editor.update(ctx, |editor, ctx| {
+            editor.set_interaction_state(InteractionState::Selectable, ctx);
+        });
+        let _ = ctx.spawn(
+            warpui::r#async::Timer::after(LOCKED_PENDING_COMMAND_TIMEOUT),
+            |me, _, ctx| {
+                if me.has_pending_command {
+                    me.editor.update(ctx, |editor, ctx| {
+                        editor.set_interaction_state(InteractionState::Editable, ctx);
+                    });
+                }
+            },
+        );
     }
 
     fn should_enter_accept_completion_suggestion(&self, app: &AppContext) -> bool {

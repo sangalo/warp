@@ -12,6 +12,7 @@ use crate::ai::agent_management::notifications::{
 };
 use crate::ai::artifacts::Artifact;
 use crate::ai::blocklist::{BlocklistAIHistoryEvent, ConversationStatusUpdate, QueuedQueryModel};
+use crate::pane_group::{PaneGroup, PaneId};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentSessionStatus, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
 };
@@ -162,6 +163,7 @@ impl AgentNotificationsModel {
                         _ => "Task completed.",
                     };
                     let metadata = TerminalViewMetadata::lookup(*terminal_view_id, ctx);
+                    let title = with_tab_title(metadata.tab_title.as_deref(), title);
                     self.add_notification(
                         title,
                         message.to_owned(),
@@ -191,6 +193,7 @@ impl AgentNotificationsModel {
                         (None, None) => "The agent encountered an error.".to_owned(),
                     };
                     let metadata = TerminalViewMetadata::lookup(*terminal_view_id, ctx);
+                    let title = with_tab_title(metadata.tab_title.as_deref(), title);
                     self.add_notification(
                         title,
                         body,
@@ -211,6 +214,7 @@ impl AgentNotificationsModel {
                         .display_title()
                         .unwrap_or_else(|| format!("{} needs attention", agent.display_name()));
                     let metadata = TerminalViewMetadata::lookup(*terminal_view_id, ctx);
+                    let title = with_tab_title(metadata.tab_title.as_deref(), title);
                     self.add_notification(
                         title,
                         message
@@ -233,6 +237,7 @@ impl AgentNotificationsModel {
                         .display_title()
                         .unwrap_or_else(|| format!("{} cancelled", agent.display_name()));
                     let metadata = TerminalViewMetadata::lookup(*terminal_view_id, ctx);
+                    let title = with_tab_title(metadata.tab_title.as_deref(), title);
                     self.add_notification(
                         title,
                         "Cancelled by user.".to_owned(),
@@ -367,6 +372,7 @@ impl AgentNotificationsModel {
 
         let title = latest_query.unwrap_or_else(|| "Agent task".to_owned());
         let metadata = TerminalViewMetadata::lookup(terminal_view_id, ctx);
+        let title = with_tab_title(metadata.tab_title.as_deref(), title);
         let oz_agent = NotificationSourceAgent::Oz {
             is_ambient: metadata.is_ambient,
         };
@@ -580,34 +586,68 @@ fn window_and_tab_idx_id_for_conversation(
         })
 }
 
-/// Per-notification metadata derived from a single [`TerminalView`] lookup. Both fields
-/// are read on the same emit path, so we resolve the view once and pass the projection
+/// Per-notification metadata derived from a single [`TerminalView`] lookup. Every field
+/// is read on the same emit path, so we resolve the view once and pass the projection
 /// down rather than walking the workspace tree for each.
 struct TerminalViewMetadata {
     is_ambient: bool,
     branch: Option<String>,
+    /// The name the user gave the tab this session lives in, when they gave it one.
+    tab_title: Option<String>,
 }
 
 impl TerminalViewMetadata {
     fn lookup(terminal_view_id: EntityId, app: &AppContext) -> Self {
-        let Some(terminal_view) = find_terminal_view_by_id(terminal_view_id, app) else {
+        let Some((terminal_view, tab_title)) = find_terminal_view_by_id(terminal_view_id, app)
+        else {
             return Self {
                 is_ambient: false,
                 branch: None,
+                tab_title: None,
             };
         };
         let view = terminal_view.as_ref(app);
         Self {
             is_ambient: view.is_ambient_agent_session(app),
             branch: view.current_git_branch(app),
+            tab_title,
         }
     }
+}
+
+/// Prefixes a notification title with the tab the agent is running in, so the
+/// notification says *which* tab finished without the user having to guess. Left
+/// untouched when the tab was never renamed, or when the agent's own title already
+/// leads with the tab name.
+fn with_tab_title(tab_title: Option<&str>, title: String) -> String {
+    match tab_title {
+        Some(tab) if !title.starts_with(tab) => format!("{tab} · {title}"),
+        _ => title,
+    }
+}
+
+/// The name the *user* chose for a tab: the vertical-tabs rename on the pane first,
+/// then the tab-level rename. Auto-derived titles (shell, session, working directory)
+/// are deliberately ignored, so a prefixed notification only ever carries a label the
+/// user typed and will recognize.
+fn user_tab_title(pane_group: &PaneGroup, pane_id: PaneId, app: &AppContext) -> Option<String> {
+    pane_group
+        .pane_by_id(pane_id)
+        .and_then(|pane| {
+            pane.pane_configuration()
+                .as_ref(app)
+                .custom_vertical_tabs_title()
+                .map(str::to_owned)
+        })
+        .or_else(|| pane_group.custom_title(app))
+        .map(|title| title.trim().to_owned())
+        .filter(|title| !title.is_empty())
 }
 
 fn find_terminal_view_by_id(
     terminal_view_id: EntityId,
     app: &AppContext,
-) -> Option<ViewHandle<TerminalView>> {
+) -> Option<(ViewHandle<TerminalView>, Option<String>)> {
     for (_, workspace_handle) in WorkspaceRegistry::as_ref(app).all_workspaces(app) {
         for pane_group in workspace_handle.as_ref(app).tab_views() {
             let pane_group = pane_group.as_ref(app);
@@ -615,7 +655,8 @@ fn find_terminal_view_by_id(
                 if let Some(terminal_view) = pane_group.terminal_view_from_pane_id(pane_id, app)
                     && terminal_view.id() == terminal_view_id
                 {
-                    return Some(terminal_view);
+                    let tab_title = user_tab_title(pane_group, pane_id, app);
+                    return Some((terminal_view, tab_title));
                 }
             }
         }

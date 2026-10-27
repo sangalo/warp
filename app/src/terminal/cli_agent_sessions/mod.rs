@@ -2,6 +2,7 @@ pub mod event;
 pub mod listener;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod plugin_manager;
+pub mod resume_on_restart;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -11,6 +12,7 @@ use warpui::r#async::SpawnedFutureHandle;
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use self::listener::CLIAgentSessionListener;
+use self::resume_on_restart::CLIAgentResume;
 use super::CLIAgent;
 use crate::ai::blocklist::InputConfig;
 
@@ -59,6 +61,7 @@ pub struct CLIAgentSessionContext {
     pub cwd: Option<String>,
     pub project: Option<String>,
     pub session_id: Option<String>,
+    pub transcript_path: Option<String>,
     pub tool_name: Option<String>,
     pub tool_input_preview: Option<String>,
     pub summary: Option<String>,
@@ -205,6 +208,11 @@ impl CLIAgentSession {
             .session_id
             .clone()
             .or(self.session_context.session_id.take());
+        self.session_context.transcript_path = event
+            .payload
+            .transcript_path
+            .clone()
+            .or(self.session_context.transcript_path.take());
 
         let new_status = match &event.event {
             CLIAgentEventType::PromptSubmit => {
@@ -361,6 +369,9 @@ pub struct CLIAgentSessionsModel {
     /// Source of `CtrlCCancelState::armed_token` values. Monotonically increasing;
     /// never reused, so a stale callback can never alias a newer window.
     next_ctrl_c_token: u64,
+    /// Conversations being resumed after a restart, keyed by terminal view. See
+    /// [`Self::expect_resumed_session`].
+    resumed_sessions: HashMap<EntityId, CLIAgentResume>,
 }
 
 impl Entity for CLIAgentSessionsModel {
@@ -376,6 +387,7 @@ impl CLIAgentSessionsModel {
             plugin_auto_failures: HashSet::new(),
             ctrl_c_cancel_state: HashMap::new(),
             next_ctrl_c_token: 0,
+            resumed_sessions: HashMap::new(),
         }
     }
 
@@ -456,7 +468,32 @@ impl CLIAgentSessionsModel {
         );
     }
 
+    /// Records that `resume` is being reopened in this terminal.
+    ///
+    /// The session it starts shows the conversation's title until the agent reports a newer
+    /// prompt. Until the agent process exits, [`Self::resume_for`] keeps reporting the
+    /// conversation even before the agent has identified itself, so a save made during startup
+    /// does not forget it.
+    pub fn expect_resumed_session(&mut self, terminal_view_id: EntityId, resume: CLIAgentResume) {
+        self.resumed_sessions.insert(terminal_view_id, resume);
+    }
+
+    /// The conversation to reopen in this terminal after a restart, if any.
+    ///
+    /// `command` returns the command line that started the terminal's running agent. It is only
+    /// called when the terminal has an agent session.
+    pub fn resume_for(
+        &self,
+        terminal_view_id: EntityId,
+        command: impl FnOnce() -> String,
+    ) -> Option<CLIAgentResume> {
+        self.session(terminal_view_id)
+            .and_then(|session| CLIAgentResume::capture(session, &command()))
+            .or_else(|| self.resumed_sessions.get(&terminal_view_id).cloned())
+    }
+
     pub fn remove_session(&mut self, terminal_view_id: EntityId, ctx: &mut ModelContext<Self>) {
+        self.resumed_sessions.remove(&terminal_view_id);
         self.abort_pending_cancel(terminal_view_id);
         self.ctrl_c_cancel_state.remove(&terminal_view_id);
         if let Some(session) = self.sessions.remove(&terminal_view_id) {
@@ -511,7 +548,17 @@ impl CLIAgentSessionsModel {
         }
 
         let event_type = &event.event;
-        if let Some(new_status) = session.apply_event(event) {
+        let previous_resume_target = (
+            session.session_context.session_id.clone(),
+            session.session_context.display_title(),
+        );
+        let new_status = session.apply_event(event);
+        let resume_target_changed = previous_resume_target
+            != (
+                session.session_context.session_id.clone(),
+                session.session_context.display_title(),
+            );
+        if let Some(new_status) = new_status {
             let agent = session.agent;
             ctx.emit(CLIAgentSessionsModelEvent::StatusChanged {
                 terminal_view_id,
@@ -531,6 +578,13 @@ impl CLIAgentSessionsModel {
                 terminal_view_id,
                 agent: session.agent,
             });
+        }
+
+        // The pane snapshot carries the conversation to resume after a restart, so it must reach
+        // disk as soon as it changes rather than at the next unrelated save, which a crash could
+        // pre-empt. Saving on every event instead would snapshot all panes after each tool call.
+        if resume_target_changed {
+            ctx.dispatch_global_action("workspace:save_app", ());
         }
     }
 
@@ -736,9 +790,16 @@ impl CLIAgentSessionsModel {
     pub fn set_session(
         &mut self,
         terminal_view_id: EntityId,
-        session: CLIAgentSession,
+        mut session: CLIAgentSession,
         ctx: &mut ModelContext<Self>,
     ) {
+        if let Some(title) = self
+            .resumed_sessions
+            .get(&terminal_view_id)
+            .and_then(|resume| resume.title.clone())
+        {
+            session.session_context.query.get_or_insert(title);
+        }
         let agent = session.agent;
         // Close any open rich input before replacing, so subscribers can
         // restore input config before the session ends.

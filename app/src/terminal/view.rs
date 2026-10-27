@@ -5184,7 +5184,11 @@ impl TerminalView {
 
     /// Returns whether this terminal view should subscribe to git status updates.
     fn should_subscribe_to_git_status(&self, ctx: &AppContext) -> bool {
-        self.needs_git_status_for_chip_ui(ctx) || self.needs_git_status_for_agent_context(ctx)
+        self.needs_git_status_for_chip_ui(ctx)
+            || self.needs_git_status_for_agent_context(ctx)
+            // Keeps the tab's branch current while a CLI agent switches branches, which the shell
+            // prompt cannot reflect until the agent exits.
+            || (self.has_active_cli_agent_session(ctx) && self.current_repo_path.is_some())
     }
 
     /// Whether the terminal's prompt/footer chips need PR info.
@@ -9536,6 +9540,12 @@ impl TerminalView {
     pub fn set_pending_command(&self, exec: &str, ctx: &mut ViewContext<Self>) {
         self.input.update(ctx, |input, ctx| {
             input.set_pending_command(exec, ctx);
+        })
+    }
+
+    pub fn set_locked_pending_command(&self, exec: &str, ctx: &mut ViewContext<Self>) {
+        self.input.update(ctx, |input, ctx| {
+            input.set_locked_pending_command(exec, ctx);
         })
     }
 

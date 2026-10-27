@@ -42,8 +42,9 @@ use crate::appearance::Appearance;
 use crate::menu::{MenuItem, MenuItemFields};
 use crate::settings::{
     AISettings, AISettingsChangedEvent, AutoDismissRichInputAfterSubmit,
-    AutoOpenRichInputOnCLIAgentStart, AutoToggleRichInput, ShouldRenderCLIAgentToolbar,
-    SubmitRichInputOnCtrlEnter,
+    AutoOpenRichInputOnCLIAgentStart, AutoToggleRichInput, CLIAgentSoundWhenFailed,
+    CLIAgentSoundWhenFinished, CLIAgentSoundWhenWaiting, ResumeCLIAgentsOnRestart,
+    ShouldRenderCLIAgentToolbar, SubmitRichInputOnCtrlEnter,
 };
 use crate::terminal::CLIAgent;
 use crate::util::bindings;
@@ -131,6 +132,10 @@ impl CLIAgentsPageView {
             Box::new(CLIAgentAutoOpenRichInputWidget::default()),
             Box::new(CLIAgentAutoDismissRichInputWidget::default()),
             Box::new(CLIAgentSubmitRichInputWidget::default()),
+            Box::new(CLIAgentResumeOnRestartWidget::default()),
+            Box::new(CLIAgentSoundWidget::new(CLIAgentSoundEvent::Waiting)),
+            Box::new(CLIAgentSoundWidget::new(CLIAgentSoundEvent::Finished)),
+            Box::new(CLIAgentSoundWidget::new(CLIAgentSoundEvent::Failed)),
             Box::new(CLIAgentCommandsWidget),
             Box::new(CLIAgentToolbarLayoutWidget),
         ];
@@ -231,6 +236,43 @@ pub enum CLIAgentsPageEvent {
     FocusModal,
 }
 
+/// A CLI agent session event that can play a sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CLIAgentSoundEvent {
+    Waiting,
+    Finished,
+    Failed,
+}
+
+impl CLIAgentSoundEvent {
+    /// The macOS system sound used when the event's sound is turned on from the UI.
+    fn default_sound(self) -> &'static str {
+        match self {
+            CLIAgentSoundEvent::Waiting => "Glass",
+            CLIAgentSoundEvent::Finished => "Hero",
+            CLIAgentSoundEvent::Failed => "Basso",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            CLIAgentSoundEvent::Waiting => "Play a sound when a coding agent needs your input",
+            CLIAgentSoundEvent::Finished => "Play a sound when a coding agent finishes",
+            CLIAgentSoundEvent::Failed => "Play a sound when a coding agent fails",
+        }
+    }
+
+    fn is_enabled(self, app: &AppContext) -> bool {
+        let settings = AISettings::as_ref(app);
+        let value = match self {
+            CLIAgentSoundEvent::Waiting => settings.cli_agent_sound_when_waiting.value(),
+            CLIAgentSoundEvent::Finished => settings.cli_agent_sound_when_finished.value(),
+            CLIAgentSoundEvent::Failed => settings.cli_agent_sound_when_failed.value(),
+        };
+        !value.trim().is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CLIAgentsPageAction {
     ToggleCLIAgentToolbar,
@@ -238,6 +280,8 @@ pub enum CLIAgentsPageAction {
     ToggleAutoOpenRichInputOnCLIAgentStart,
     ToggleAutoDismissRichInputAfterSubmit,
     ToggleSubmitRichInputOnCtrlEnter,
+    ToggleResumeCLIAgentsOnRestart,
+    ToggleSound(CLIAgentSoundEvent),
     RemoveCLIAgentToolbarEnabledCommand(String),
     SetCLIAgentForCommand {
         pattern: String,
@@ -299,6 +343,39 @@ impl TypedActionView for CLIAgentsPageView {
             CLIAgentsPageAction::ToggleSubmitRichInputOnCtrlEnter => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.submit_on_ctrl_enter.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            CLIAgentsPageAction::ToggleSound(event) => {
+                let event = *event;
+                let new_value = if event.is_enabled(ctx) {
+                    String::new()
+                } else {
+                    event.default_sound().to_owned()
+                };
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let result = match event {
+                        CLIAgentSoundEvent::Waiting => settings
+                            .cli_agent_sound_when_waiting
+                            .set_value(new_value, ctx),
+                        CLIAgentSoundEvent::Finished => settings
+                            .cli_agent_sound_when_finished
+                            .set_value(new_value, ctx),
+                        CLIAgentSoundEvent::Failed => settings
+                            .cli_agent_sound_when_failed
+                            .set_value(new_value, ctx),
+                    };
+                    report_if_error!(result);
+                });
+                ctx.notify();
+            }
+            CLIAgentsPageAction::ToggleResumeCLIAgentsOnRestart => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(
+                        settings
+                            .resume_cli_agents_on_restart
+                            .toggle_and_save_value(ctx)
+                    );
                 });
                 ctx.notify();
             }
@@ -395,6 +472,42 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
             )
             .with_group(bindings::BindingGroup::WarpAi)
             .with_enabled(|| FeatureFlag::CLIAgentRichInput.is_enabled()),
+            ToggleSettingActionPair::new(
+                "sound when a coding agent needs your input",
+                builder(SettingsAction::CLIAgents(CLIAgentsPageAction::ToggleSound(
+                    CLIAgentSoundEvent::Waiting,
+                ))),
+                context,
+                flags::CLI_AGENT_SOUND_WHEN_WAITING_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
+            ToggleSettingActionPair::new(
+                "sound when a coding agent finishes",
+                builder(SettingsAction::CLIAgents(CLIAgentsPageAction::ToggleSound(
+                    CLIAgentSoundEvent::Finished,
+                ))),
+                context,
+                flags::CLI_AGENT_SOUND_WHEN_FINISHED_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
+            ToggleSettingActionPair::new(
+                "sound when a coding agent fails",
+                builder(SettingsAction::CLIAgents(CLIAgentsPageAction::ToggleSound(
+                    CLIAgentSoundEvent::Failed,
+                ))),
+                context,
+                flags::CLI_AGENT_SOUND_WHEN_FAILED_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
+            ToggleSettingActionPair::new(
+                "resume coding agent conversations when Warp restarts",
+                builder(SettingsAction::CLIAgents(
+                    CLIAgentsPageAction::ToggleResumeCLIAgentsOnRestart,
+                )),
+                context,
+                flags::RESUME_CLI_AGENTS_ON_RESTART_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
         ],
         app,
     );
@@ -573,6 +686,84 @@ impl SettingsWidget for CLIAgentAutoOpenRichInputWidget {
             "Auto open Rich Input when a coding agent session starts",
             CLIAgentsPageAction::ToggleAutoOpenRichInputOnCLIAgentStart,
             *AISettings::as_ref(app).auto_open_rich_input_on_cli_agent_start,
+            true,
+            self.toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        )
+    }
+}
+
+#[derive(Default)]
+struct CLIAgentResumeOnRestartWidget {
+    toggle: SwitchStateHandle,
+}
+
+impl SettingsWidget for CLIAgentResumeOnRestartWidget {
+    type View = CLIAgentsPageView;
+
+    fn search_terms(&self) -> &str {
+        "third party cli coding agent claude resume restart restore reopen conversation session"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        _appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        render_ai_setting_toggle::<ResumeCLIAgentsOnRestart>(
+            "Resume coding agent conversations when Warp restarts",
+            CLIAgentsPageAction::ToggleResumeCLIAgentsOnRestart,
+            *AISettings::as_ref(app).resume_cli_agents_on_restart,
+            true,
+            self.toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        )
+    }
+}
+
+struct CLIAgentSoundWidget {
+    event: CLIAgentSoundEvent,
+    toggle: SwitchStateHandle,
+}
+
+impl CLIAgentSoundWidget {
+    fn new(event: CLIAgentSoundEvent) -> Self {
+        Self {
+            event,
+            toggle: SwitchStateHandle::default(),
+        }
+    }
+}
+
+impl SettingsWidget for CLIAgentSoundWidget {
+    type View = CLIAgentsPageView;
+
+    fn search_terms(&self) -> &str {
+        "third party cli coding agent claude sound audio alert notify chime"
+    }
+
+    fn should_render(&self, _app: &AppContext) -> bool {
+        cfg!(target_os = "macos")
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        _appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let render = match self.event {
+            CLIAgentSoundEvent::Waiting => render_ai_setting_toggle::<CLIAgentSoundWhenWaiting>,
+            CLIAgentSoundEvent::Finished => render_ai_setting_toggle::<CLIAgentSoundWhenFinished>,
+            CLIAgentSoundEvent::Failed => render_ai_setting_toggle::<CLIAgentSoundWhenFailed>,
+        };
+        render(
+            self.event.label(),
+            CLIAgentsPageAction::ToggleSound(self.event),
+            self.event.is_enabled(app),
             true,
             self.toggle.clone(),
             &view.local_only_icon_tooltip_states,

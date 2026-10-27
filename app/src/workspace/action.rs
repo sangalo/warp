@@ -184,6 +184,8 @@ pub enum WorkspaceAction {
     CloseTabsRightActiveTab,
     /// Close every tab that belongs to the given tab group.
     CloseTabGroup(TabGroupId),
+    /// Rebuilds a tab group that was closed earlier, by the name it was stored under.
+    ReopenSavedTabSet(String),
     /// Toggle collapsed state for the given tab group.
     ToggleTabGroupCollapsed(TabGroupId),
     /// Opens an inline editor over the given group's header for renaming.
@@ -278,6 +280,10 @@ pub enum WorkspaceAction {
         anchor: NewSessionMenuAnchor,
     },
     ToggleTabConfigsMenu,
+    /// Shows or hides the panel listing who holds each shared resource.
+    ToggleSessionResourcesPanel,
+    /// Turns the chime played when the agent finishes a turn on or off for the tab at this index.
+    ToggleTabFinishChime(usize),
     ToggleNewSessionMenu {
         anchor: NewSessionMenuAnchor,
     },
@@ -966,6 +972,7 @@ impl WorkspaceAction {
             | CloseTabsRight(_)
             | CloseTabsRightActiveTab
             | CloseTabGroup(_)
+            | ReopenSavedTabSet(_)
             | ToggleTabGroupCollapsed(_)
             | RenameTabGroup(_)
             | NewTabGroupFromTab(_)
@@ -1057,6 +1064,8 @@ impl WorkspaceAction {
             | ToggleVerticalTabsPaneContextMenu { .. }
             | OpenNewSessionMenu { .. }
             | ToggleTabConfigsMenu
+            | ToggleSessionResourcesPanel
+            | ToggleTabFinishChime(_)
             | ToggleNewSessionMenu { .. }
             | SelectNewSessionMenuItem(_)
             | ToggleTabBarOverflowMenu

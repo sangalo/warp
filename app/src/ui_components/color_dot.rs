@@ -24,6 +24,30 @@ pub(crate) const TAB_COLOR_OPTIONS: [AnsiColorIdentifier; 6] = [
     AnsiColorIdentifier::Cyan,
 ];
 
+/// Tab chrome colors, deliberately *not* routed through the theme's ANSI palette.
+///
+/// A tab color identifies a tab at a glance across a long sidebar, which is a different
+/// job from coloring terminal output: terminal ANSI colors are tuned to sit quietly
+/// behind text, and many themes render them desaturated enough that a tinted row is
+/// nearly indistinguishable from an untinted one. These are fixed, saturated hues chosen
+/// to stay separable from each other and to read on both light and dark backgrounds. They
+/// are only ever painted at low opacity behind a row, so text contrast is unaffected.
+pub(crate) fn vivid_tab_color(color: AnsiColorIdentifier) -> ColorU {
+    let (r, g, b) = match color {
+        // Pink, so a red tab is not mistaken for the red that marks a file conflict.
+        AnsiColorIdentifier::Red => (236, 72, 153),
+        AnsiColorIdentifier::Green => (34, 197, 94),
+        AnsiColorIdentifier::Yellow => (234, 179, 8),
+        AnsiColorIdentifier::Blue => (59, 130, 246),
+        AnsiColorIdentifier::Magenta => (139, 92, 246),
+        AnsiColorIdentifier::Cyan => (20, 184, 166),
+        // Not offered in the picker, but directory-derived colors can produce them.
+        AnsiColorIdentifier::Black => (138, 143, 152),
+        AnsiColorIdentifier::White => (230, 232, 235),
+    };
+    ColorU { r, g, b, a: 255 }
+}
+
 /// Renders a hoverable color dot with selection ring, tooltip, and pointer cursor.
 /// For the no-color option, pass `is_no_color: true` to show a slash overlay.
 /// Returns a `Hoverable` so callers can chain `.on_click(...)` before `.finish()`.

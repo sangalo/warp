@@ -9757,3 +9757,38 @@ fn hotkey_opens_ai_command_search_even_when_hash_trigger_disabled() {
         );
     });
 }
+
+#[test]
+fn locked_pending_command_ignores_typing_until_it_runs() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let command = "claude --resume 3f2a9c1e-7b4d-4e8a-9f10-2c3d4e5f6a7b";
+
+        input.update(&mut app, |input, ctx| {
+            input.set_locked_pending_command(command, ctx);
+        });
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new(" ter")), ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), command);
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.execute_pending_command(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(!input.has_pending_command());
+        });
+        editor.read(&app, |editor, ctx| {
+            assert!(editor.can_edit(ctx));
+        });
+    })
+}

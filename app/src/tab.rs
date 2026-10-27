@@ -45,7 +45,7 @@ use crate::terminal::shared_session::render_util::shared_session_indicator_color
 use crate::terminal::view::TerminalViewState;
 use crate::themes::theme::{AnsiColorIdentifier, Fill as ThemeFill, VerticalGradient};
 use crate::ui_components::buttons::icon_button;
-use crate::ui_components::color_dot::{TAB_COLOR_OPTIONS, render_color_dot};
+use crate::ui_components::color_dot::{TAB_COLOR_OPTIONS, render_color_dot, vivid_tab_color};
 use crate::ui_components::icons::{ICON_DIMENSIONS, Icon};
 use crate::util::bindings::{keybinding_name_to_display_string, keybinding_name_to_keystroke};
 use crate::util::color::{Opacity, coloru_with_opacity};
@@ -370,6 +370,8 @@ pub struct TabData {
     pub in_multi_selection: bool,
     /// True when this tab is pinned to the front of the tab list.
     pub pinned: bool,
+    /// True when this tab chimes as its agent finishes a turn.
+    pub finish_chime: bool,
 }
 
 const TAB_COLOR_ICON_PATH: &str = "bundled/svg/ellipse.svg";
@@ -390,6 +392,7 @@ impl TabData {
             group_id: None,
             in_multi_selection: false,
             pinned: false,
+            finish_chime: false,
         }
     }
 
@@ -880,11 +883,7 @@ impl TabData {
         terminal_colors: AnsiColors,
     ) -> Vec<MenuItem<WorkspaceAction>> {
         if FeatureFlag::DirectoryTabColors.is_enabled() {
-            color_picker_menu_items(
-                self.color(),
-                terminal_colors,
-                ColorPickerTarget::Tab { tab_index: index },
-            )
+            color_picker_menu_items(self.color(), ColorPickerTarget::Tab { tab_index: index })
         } else {
             self.legacy_color_option_menu_items(index, terminal_colors)
         }
@@ -950,7 +949,6 @@ impl ColorPickerTarget {
 /// action is dispatched on click, either tab or group color selection.
 pub(crate) fn color_picker_menu_items(
     current_color: Option<AnsiColorIdentifier>,
-    terminal_colors: AnsiColors,
     target: ColorPickerTarget,
 ) -> Vec<MenuItem<WorkspaceAction>> {
     let mouse_states: Vec<MouseStateHandle> = (0..TAB_COLOR_OPTIONS.len() + 1)
@@ -978,7 +976,7 @@ pub(crate) fn color_picker_menu_items(
                     };
                     let dot_color: ColorU = match ansi_id {
                         None => ColorU::transparent_black(),
-                        Some(id) => id.to_ansi_color(&terminal_colors).into(),
+                        Some(id) => vivid_tab_color(id),
                     };
                     let tooltip = match ansi_id {
                         None => "Default (no color)".to_string(),

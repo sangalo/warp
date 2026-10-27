@@ -1862,6 +1862,56 @@ define_settings_group!(AISettings, settings: [
         description: "Whether CLI agent Rich Input automatically opens when a CLI agent session starts.",
     }
 
+    // Sound played when a CLI agent session needs the user (a permission request or a question):
+    // a macOS system sound name such as "Glass", or a path to a sound file. Empty plays nothing.
+    cli_agent_sound_when_waiting: CLIAgentSoundWhenWaiting {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::MAC,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.third_party.sounds.when_waiting",
+        description: "Sound played when a CLI agent session needs your input. A macOS system sound name or a file path; empty for none.",
+    }
+
+    // Sound played when a CLI agent session finishes its turn. Same format as above.
+    cli_agent_sound_when_finished: CLIAgentSoundWhenFinished {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::MAC,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.third_party.sounds.when_finished",
+        description: "Sound played when a CLI agent session finishes. A macOS system sound name or a file path; empty for none.",
+    }
+
+    // Sound played when a CLI agent session fails. Same format as above.
+    cli_agent_sound_when_failed: CLIAgentSoundWhenFailed {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::MAC,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.third_party.sounds.when_failed",
+        description: "Sound played when a CLI agent session fails. A macOS system sound name or a file path; empty for none.",
+    }
+
+    // When enabled, panes that were running a CLI agent conversation when Warp quit reopen that
+    // conversation on restart.
+    resume_cli_agents_on_restart: ResumeCLIAgentsOnRestart {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.third_party.resume_on_restart",
+        description: "Whether CLI agent conversations that were open when Warp quit are resumed on restart.",
+    }
+
     // When enabled and a CLI agent session does NOT have a plugin listener,
     // rich input auto-closes after the user submits a prompt.
     // When the plugin IS present, this setting has no effect (auto-show/hide

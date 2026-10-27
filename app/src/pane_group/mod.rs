@@ -122,6 +122,7 @@ use crate::shell_indicator::ShellIndicatorType;
 use crate::terminal::available_shells::{AvailableShell, AvailableShells};
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::PluginModalKind;
+use crate::terminal::cli_agent_sessions::resume_on_restart;
 use crate::terminal::focus_env::add_session_focus_env_vars;
 use crate::terminal::general_settings::{GeneralSettings, GeneralSettingsChangedEvent};
 #[cfg(feature = "local_tty")]
@@ -1678,6 +1679,9 @@ impl PaneGroup {
                     .cwd
                     .map(PathBuf::from)
                     .filter(|path| path.is_dir());
+                let cli_agent_resume = terminal_snapshot
+                    .cli_agent_resume
+                    .filter(|_| startup_directory.is_some());
 
                 // Filter conversation IDs to only include those that have task messages
                 // and are not entirely passive (ignored suggestions).
@@ -1735,6 +1739,10 @@ impl PaneGroup {
                 );
 
                 let terminal_view_id = terminal_view.id();
+
+                if let Some(resume) = &cli_agent_resume {
+                    resume_on_restart::resume_in_terminal(resume, &terminal_view, ctx);
+                }
 
                 let pane_data = TerminalPane::new(
                     uuid.0,
@@ -2203,6 +2211,7 @@ impl PaneGroup {
                             active_profile_id: None,
                             conversation_ids_to_restore: Vec::new(),
                             active_conversation_id: None,
+                            cli_agent_resume: None,
                         })
                     }
                 };
@@ -7920,6 +7929,18 @@ impl PaneGroup {
                 let is_shared = terminal_view.as_ref(ctx).is_sharing_session();
                 is_shared.then(|| terminal_view.id())
             })
+            .collect()
+    }
+
+    /// Like [`Self::terminal_views`], paired with the hex session UUID each terminal exports to its
+    /// processes as `WARP_TERMINAL_SESSION_UUID`.
+    pub fn terminal_views_by_session_uuid(
+        &self,
+        ctx: &AppContext,
+    ) -> Vec<(String, ViewHandle<TerminalView>)> {
+        self.panes_of::<TerminalPane>()
+            .filter(|p| !self.is_pane_hidden_for_close(p.terminal_pane_id().into()))
+            .map(|p| (hex::encode(p.uuid()), p.terminal_view(ctx)))
             .collect()
     }
 

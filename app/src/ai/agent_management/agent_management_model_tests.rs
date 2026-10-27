@@ -3,7 +3,7 @@ use warp_core::features::FeatureFlag;
 use warp_errors::report_if_error;
 use warpui::{App, EntityId, ModelHandle, SingletonEntity};
 
-use super::AgentNotificationsModel;
+use super::{AgentNotificationsModel, with_tab_title};
 use crate::BlocklistAIHistoryModel;
 use crate::ai::active_agent_views_model::ActiveAgentViewsModel;
 use crate::ai::agent::conversation::{AIConversation, AIConversationId, ConversationStatus};
@@ -438,4 +438,28 @@ fn in_progress_resume_clears_stale_notification_and_adds_none() {
             );
         });
     });
+}
+
+#[test]
+fn tab_title_prefixes_the_agent_title() {
+    assert_eq!(
+        with_tab_title(Some("ACME"), "Fixed the DM bug".to_owned()),
+        "ACME · Fixed the DM bug"
+    );
+}
+
+#[test]
+fn untitled_tab_leaves_the_agent_title_alone() {
+    assert_eq!(
+        with_tab_title(None, "Claude Code completed".to_owned()),
+        "Claude Code completed"
+    );
+}
+
+#[test]
+fn tab_title_is_not_repeated_when_the_agent_already_led_with_it() {
+    assert_eq!(
+        with_tab_title(Some("ACME"), "ACME deploy finished".to_owned()),
+        "ACME deploy finished"
+    );
 }

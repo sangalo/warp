@@ -137,6 +137,10 @@ pub(in crate::pane_group) fn inherit_share_for_local_child(
 }
 
 impl TerminalPane {
+    pub fn uuid(&self) -> &[u8] {
+        &self.uuid
+    }
+
     pub(in crate::pane_group) fn new(
         uuid: Vec<u8>,
         terminal_manager: ModelHandle<Box<dyn TerminalManager>>,
@@ -468,6 +472,7 @@ impl PaneContent for TerminalPane {
                 active_profile_id: None,
                 conversation_ids_to_restore: vec![],
                 active_conversation_id: None,
+                cli_agent_resume: None,
             })
         } else if let Some(task_id) = view
             .ambient_agent_view_model()
@@ -498,6 +503,7 @@ impl PaneContent for TerminalPane {
                     active_profile_id: None,
                     conversation_ids_to_restore: vec![],
                     active_conversation_id: None,
+                    cli_agent_resume: None,
                 })
             }
         } else {
@@ -528,17 +534,33 @@ impl PaneContent for TerminalPane {
                         .active_conversation_id()
                 });
 
+            let (is_read_only, cli_agent_resume) = {
+                let model = view.model.lock();
+                let cli_agent_resume = (!model.is_read_only())
+                    .then(|| {
+                        CLIAgentSessionsModel::as_ref(app).resume_for(view.id(), || {
+                            model
+                                .block_list()
+                                .active_block()
+                                .command_with_secrets_obfuscated(false)
+                        })
+                    })
+                    .flatten();
+                (model.is_read_only(), cli_agent_resume)
+            };
+
             LeafContents::Terminal(TerminalPaneSnapshot {
                 uuid: self.uuid.clone(),
                 cwd: view.pwd_if_local(app),
                 is_active,
-                is_read_only: view.model.lock().is_read_only(),
+                is_read_only,
                 shell_launch_data: view.shell_launch_data_if_local(app),
                 input_config: Some(current_input_config),
                 llm_model_override,
                 active_profile_id,
                 conversation_ids_to_restore,
                 active_conversation_id,
+                cli_agent_resume,
             })
         }
     }

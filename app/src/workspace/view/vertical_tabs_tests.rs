@@ -17,7 +17,7 @@ use super::{
     push_normalized_unique_summary_label, search_fragments_contain_query,
     select_summary_pane_kind_icons, should_keep_detail_sidecar_visible_for_mouse_position,
     should_show_tab_group_header, shows_synced_inputs_indicator,
-    sort_summary_primary_labels_status_first, summary_overflow_count,
+    sort_summary_primary_labels_status_first, strip_agent_status_glyph, summary_overflow_count,
     summary_search_text_fragments, terminal_kind_badge_label, terminal_primary_line_data,
     terminal_pull_request_badge_label, terminal_search_text_fragments,
     terminal_title_fallback_font, uses_outer_group_container, visible_pane_ids_for_detail_target,
@@ -1241,4 +1241,16 @@ fn summary_search_fragments_include_hidden_overflow_values() {
     assert!(search_fragments_contain_query(&fragments, "#789"));
     assert!(search_fragments_contain_query(&fragments, "+2"));
     assert!(search_fragments_contain_query(&fragments, "-3"));
+}
+
+#[test]
+fn strips_agent_status_glyph_from_titles() {
+    assert_eq!(
+        strip_agent_status_glyph("◐ Interface diferente"),
+        "Interface diferente"
+    );
+    assert_eq!(strip_agent_status_glyph("✳ Claude Code"), "Claude Code");
+    assert_eq!(strip_agent_status_glyph("~/code warp"), "~/code warp");
+    assert_eq!(strip_agent_status_glyph("É hora"), "É hora");
+    assert_eq!(strip_agent_status_glyph("✳"), "✳");
 }

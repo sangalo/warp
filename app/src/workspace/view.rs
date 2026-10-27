@@ -15,6 +15,8 @@ pub(crate) mod onboarding;
 pub(crate) mod openwarp_launch_modal;
 pub(crate) mod orchestration_launch_modal;
 pub(crate) mod right_panel;
+mod session_identity_band;
+mod session_signals_panel;
 mod startup_directory;
 mod tab_grouping;
 #[cfg(test)]
@@ -75,9 +77,9 @@ use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_core::ui::Icon;
 use warp_core::ui::color::coloru_with_opacity;
+use warp_core::ui::theme::Fill;
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::phenomenon::PhenomenonStyle;
-use warp_core::ui::theme::{AnsiColors, Fill};
 use warp_core::user_preferences::GetUserPreferences as _;
 use warp_editor::editor::NavigationKey;
 use warp_errors::{report_error, report_if_error};
@@ -172,10 +174,12 @@ use crate::ai::agent_conversations_model::{
     AgentConversationNavigationSubject, AgentConversationsModel,
 };
 use crate::ai::agent_management::AgentManagementEvent;
-use crate::ai::agent_management::notifications::NotificationFilter;
 use crate::ai::agent_management::notifications::toast_stack::AgentNotificationToastStack;
 use crate::ai::agent_management::notifications::view::{
     NotificationMailboxView, NotificationMailboxViewEvent,
+};
+use crate::ai::agent_management::notifications::{
+    NotificationCategory, NotificationFilter, NotificationId,
 };
 use crate::ai::agent_management::telemetry::AgentManagementTelemetryEvent;
 use crate::ai::agent_management::view::{AgentManagementView, AgentManagementViewEvent};
@@ -282,7 +286,7 @@ use crate::editor::{
 use crate::env_vars::CloudEnvVarCollection;
 use crate::env_vars::manager::{EnvVarCollectionManager, EnvVarCollectionSource};
 use crate::experiments::{BlockOnboarding, Experiment};
-use crate::launch_configs::launch_config::WindowTemplate;
+use crate::launch_configs::launch_config::{TabTemplate, WindowTemplate};
 use crate::launch_configs::save_modal::{LaunchConfigModalEvent, LaunchConfigSaveModal};
 use crate::menu::{
     Event as MenuEvent, MENU_VERTICAL_PADDING, Menu, MenuItem, MenuItemFields, MenuSelectionSource,
@@ -389,7 +393,9 @@ use crate::terminal::available_shells::AvailableShells;
 use crate::terminal::block_list_viewport::InputMode;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::{PluginModalKind, plugin_manager_for};
-use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, CLIAgentSessionsModelEvent};
+use crate::terminal::cli_agent_sessions::{
+    CLIAgentSessionStatus, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
+};
 use crate::terminal::enable_auto_reload_modal::{
     EnableAutoReloadModal, EnableAutoReloadModalEvent,
 };
@@ -495,9 +501,12 @@ use crate::workspace::cli_install;
 use crate::workspace::cross_window_tab_drag::{
     AttachTarget, CrossWindowTabDrag, DragResult, DropResult, GhostState,
 };
+use crate::workspace::group_tab_colors::effective_tab_color;
 use crate::workspace::header_toolbar_editor::{HeaderToolbarEditorEvent, HeaderToolbarEditorModal};
 use crate::workspace::header_toolbar_item::HeaderToolbarItemKind;
 use crate::workspace::one_time_modal_model::OneTimeModalModel;
+use crate::workspace::saved_tab_sets::{self, SavedTabSet};
+use crate::workspace::session_signals::{SessionSignalsEvent, SessionSignalsModel};
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 use crate::workspace::tab_settings::TabCloseButtonPosition;
@@ -3166,6 +3175,18 @@ impl Workspace {
         ctx.subscribe_to_model(&CLIAgentSessionsModel::handle(ctx), |me, _, event, ctx| {
             me.handle_cli_agent_sessions_event(event, ctx);
         });
+        // Created on first use rather than at startup so every way of building a workspace,
+        // including tests, gets one.
+        if !ctx.has_singleton_model::<SessionSignalsModel>() {
+            ctx.add_singleton_model(SessionSignalsModel::new);
+        }
+        ctx.subscribe_to_model(&SessionSignalsModel::handle(ctx), |me, _, event, ctx| {
+            match event {
+                SessionSignalsEvent::ServerTick => me.observe_server_panes(ctx),
+                SessionSignalsEvent::Changed => {}
+            }
+            ctx.notify()
+        });
 
         ctx.subscribe_to_model(
             &AgentNotificationsModel::handle(ctx),
@@ -3634,13 +3655,95 @@ impl Workspace {
                     });
                 ctx.notify();
             }
-            AgentManagementEvent::NotificationAdded { .. }
-            | AgentManagementEvent::NotificationUpdated
+            AgentManagementEvent::NotificationAdded { id } => {
+                self.send_agent_desktop_notification(*id, ctx);
+                // Re-render so the vertical tabs panel can update unread-activity dots.
+                ctx.notify();
+            }
+            AgentManagementEvent::NotificationUpdated
             | AgentManagementEvent::AllNotificationsMarkedRead => {
                 // Re-render so the vertical tabs panel can update unread-activity dots.
                 ctx.notify();
             }
         }
+    }
+
+    /// Raises a native notification for an agent notification the in-app toast will not
+    /// show. `AgentNotificationToastStack::on_notification_added` skips the toast whenever
+    /// its window is in the background, on the stated assumption that a desktop
+    /// notification covers that case. For CLI agents nothing did: their events reach the
+    /// notifications model through the plugin sentinel path, which returns before the
+    /// block-notification code that sends desktop notifications. An agent finishing while
+    /// Warp sat behind another app therefore produced no signal at all. The window check
+    /// here is the mirror image of the toast's, so exactly one of the two fires, and the
+    /// ownership check keeps a second window from raising the same alert twice.
+    fn send_agent_desktop_notification(&mut self, id: NotificationId, ctx: &mut ViewContext<Self>) {
+        if ctx.windows().active_window() == Some(ctx.window_id()) {
+            return;
+        }
+
+        let notifications = AgentNotificationsModel::as_ref(ctx).notifications();
+        let Some(item) = notifications.get_by_id(id) else {
+            return;
+        };
+        if item.is_read {
+            return;
+        }
+        let category = item.category;
+        let terminal_view_id = item.terminal_view_id;
+        let title = item.title.clone();
+        let message = item.message.clone();
+
+        if !self.owns_terminal_view(terminal_view_id, ctx) {
+            return;
+        }
+
+        let notification_settings = SessionSettings::as_ref(ctx).notifications.value().clone();
+        if !matches!(notification_settings.mode, NotificationsMode::Enabled) {
+            return;
+        }
+        let category_enabled = match category {
+            NotificationCategory::Complete | NotificationCategory::Error => {
+                notification_settings.is_agent_task_completed_enabled
+            }
+            NotificationCategory::Request => notification_settings.is_needs_attention_enabled,
+        };
+        if !category_enabled {
+            return;
+        }
+
+        // No `NotificationContext` payload: routing a click back to the right tab needs a
+        // pane id, which a `NotificationId` does not carry. Clicking brings Warp forward,
+        // and the tab name now leading the title says which tab to go to.
+        ctx.send_desktop_notification(
+            UserNotification::new_with_sound(
+                title,
+                message,
+                None,
+                notification_settings.play_notification_sound,
+            ),
+            move |_workspace, notification_error, _ctx| {
+                if let NotificationSendError::Other { error_message } = &notification_error {
+                    report_error!(
+                        anyhow::anyhow!("{error_message}")
+                            .context("Unknown error when sending agent desktop notification")
+                    );
+                }
+            },
+        );
+    }
+
+    /// Whether this workspace's window is the one holding a given terminal view. Used to
+    /// pick a single sender when several windows observe the same notification event.
+    fn owns_terminal_view(&self, terminal_view_id: EntityId, app: &AppContext) -> bool {
+        self.tab_views().any(|pane_group| {
+            let pane_group = pane_group.as_ref(app);
+            pane_group.terminal_pane_ids().any(|pane_id| {
+                pane_group
+                    .terminal_view_from_pane_id(pane_id, app)
+                    .is_some_and(|view| view.id() == terminal_view_id)
+            })
+        })
     }
 
     /// Handles updating the tab status when an agent task status changes.
@@ -3742,6 +3845,14 @@ impl Workspace {
         ) && self.workspace_contains_terminal_view(event.terminal_view_id(), ctx)
         {
             ctx.notify();
+        }
+        if let CLIAgentSessionsModelEvent::StatusChanged {
+            terminal_view_id,
+            status: CLIAgentSessionStatus::Success,
+            ..
+        } = event
+        {
+            self.maybe_play_finish_chime(*terminal_view_id, ctx);
         }
     }
 
@@ -5232,7 +5343,7 @@ impl Workspace {
                     subtitle,
                     window_id,
                     tab_index: tab_index + 1,
-                    color: tab.color(),
+                    color: effective_tab_color(tab, &self.tab_groups),
                 })
             })
             .collect()
@@ -5426,6 +5537,7 @@ impl Workspace {
         };
 
         self.active_tab_index = index;
+        self.flash_session_identity_band(ctx);
 
         // The range selection's anchor is the active tab, so any change to
         // the active tab makes the existing selection stale; clear it.
@@ -6940,6 +7052,25 @@ impl Workspace {
                     .with_icon(icons::Icon::LayersThree01)
                     .into_item(),
             );
+
+            // Groups closed with "Close all tabs in group" land here so they can
+            // come back as the same set of tabs. Listed flat rather than under a
+            // submenu: someone with a handful of parked groups should see all of
+            // them at a glance, not go hunting one level down.
+            let saved_sets = saved_tab_sets::all();
+            if !saved_sets.is_empty() {
+                menu_items.push(MenuItem::Separator);
+                for set in saved_sets {
+                    menu_items.push(
+                        MenuItemFields::new(format!("Reopen \u{201c}{}\u{201d}", set.name))
+                            .with_on_select_action(WorkspaceAction::ReopenSavedTabSet(
+                                set.name.clone(),
+                            ))
+                            .with_icon(icons::Icon::LayersThree01)
+                            .into_item(),
+                    );
+                }
+            }
         }
 
         menu_items.push(MenuItem::Separator);
@@ -7295,6 +7426,9 @@ impl Workspace {
             ctx.notify();
             return;
         }
+        // Captured before the close, not after: once the tabs are gone, their
+        // directories and startup commands are unrecoverable.
+        let saved_set = self.tab_group_as_saved_set(group_id, ctx);
         let first_index = indices[0];
         let closed = self.close_tabs(
             indices.into_iter(),
@@ -7306,9 +7440,75 @@ impl Workspace {
             ctx,
         );
         if closed {
+            // Only stored once the close actually went through. A close the user
+            // backed out of at the confirmation dialog must not park a group that
+            // is still sitting open in front of them.
+            if let Some(set) = saved_set {
+                saved_tab_sets::save(set);
+            }
             self.tab_groups.remove(&group_id);
             ctx.notify();
         }
+    }
+
+    /// Snapshots a group into a restorable set. Reuses the window snapshot the
+    /// session-restore path already builds, so a reopened group comes back with
+    /// the same fidelity a restarted Warp gives its tabs, rather than a second,
+    /// weaker idea of what a tab is.
+    fn tab_group_as_saved_set(
+        &self,
+        group_id: TabGroupId,
+        ctx: &ViewContext<Self>,
+    ) -> Option<SavedTabSet> {
+        let group = self.tab_groups.get(&group_id)?;
+        let snapshot = self.snapshot(ctx.window_id(), false, ctx);
+        let tabs: Vec<TabTemplate> = snapshot
+            .tabs
+            .into_iter()
+            .filter(|tab| tab.group_id == Some(group_id))
+            .filter_map(|tab| TabTemplate::try_from(tab).ok())
+            .collect();
+        SavedTabSet::new(group.name.clone(), group.color, tabs)
+    }
+
+    /// Reopens a stored set as a fresh group at the end of the tab list.
+    ///
+    /// The group is rebuilt rather than revived: its old [`TabGroupId`] died with
+    /// the close, and any tab that has since been created could otherwise collide
+    /// with it. Taking the set off the list keeps the reopen menu showing only
+    /// groups that are actually closed right now.
+    pub fn reopen_saved_tab_set(&mut self, name: &str, ctx: &mut ViewContext<Self>) {
+        let Some(set) = saved_tab_sets::take(name) else {
+            return;
+        };
+        let start_index = self.tabs.len();
+        let mut group = TabGroup::new();
+        group.name = Some(set.name.clone());
+        group.color = set.color;
+        let group_id = group.id;
+        self.tab_groups.insert(group_id, group);
+
+        for (offset, tab_template) in set.tabs.iter().enumerate() {
+            self.add_tab_with_pane_layout(
+                PanesLayout::Template(tab_template.layout_with_tab_commands()),
+                Arc::new(HashMap::new()),
+                tab_template.title.clone(),
+                ctx,
+            );
+            let Some(tab) = self.tabs.get_mut(start_index + offset) else {
+                continue;
+            };
+            tab.selected_color = tab_template
+                .color
+                .map_or(SelectedTabColor::Unset, SelectedTabColor::Color);
+            tab.group_id = Some(group_id);
+        }
+
+        if self.tabs.len() > start_index {
+            self.activate_tab_internal(start_index, ctx);
+        }
+        ctx.dispatch_global_action("workspace:save_app", ());
+        ctx.notify();
     }
 
     /// Toggles the collapsed state of the given tab group.
@@ -7938,9 +8138,7 @@ impl Workspace {
             return;
         }
 
-        let terminal_colors = Appearance::as_ref(ctx).theme().terminal_colors().normal;
-        let menu_items =
-            self.tab_group_menu_items(group_id, uses_vertical_tabs(ctx), terminal_colors);
+        let menu_items = self.tab_group_menu_items(group_id, uses_vertical_tabs(ctx));
         ctx.update_view(&self.tab_right_click_menu, |context_menu, view_ctx| {
             context_menu.set_items(menu_items, view_ctx);
         });
@@ -10023,7 +10221,6 @@ impl Workspace {
         &self,
         group_id: TabGroupId,
         is_vertical: bool,
-        terminal_colors: AnsiColors,
     ) -> Vec<MenuItem<WorkspaceAction>> {
         let Some((first, last)) = group_member_index_range(&self.tabs, group_id) else {
             return vec![];
@@ -10128,11 +10325,7 @@ impl Workspace {
                 .tab_groups
                 .get(&group_id)
                 .and_then(|g| g.color.resolve(None));
-            color_picker_menu_items(
-                effective_color,
-                terminal_colors,
-                ColorPickerTarget::Group { group_id },
-            )
+            color_picker_menu_items(effective_color, ColorPickerTarget::Group { group_id })
         };
 
         let mut menu_items = vec![];
@@ -19925,7 +20118,7 @@ impl Workspace {
                     row.add_child(self.render_tab_hover_indicator(appearance));
                 }
                 let tab = &self.tabs[idx];
-                let effective_color = tab.color();
+                let effective_color = effective_tab_color(tab, &self.tab_groups);
                 // Highlight the member when a drag is hovering directly over it.
                 let is_drag_target = self.hovered_tab_index == Some(TabBarHoverIndex::OverTab(idx));
                 let member = TabComponent::new(
@@ -20360,7 +20553,7 @@ impl Workspace {
             // outer `SavePosition`, `Draggable`, and `DropTarget` wrappers
             // so the chip overlay doesn't pollute the target window's
             // position cache (see `TabComponent::for_drag_ghost`).
-            let effective_color = tab.color();
+            let effective_color = effective_tab_color(tab, &self.tab_groups);
             TabComponent::new(
                 tab_index,
                 tab_bar_state,
@@ -20947,13 +21140,15 @@ impl Workspace {
                 .finish()
             };
 
-            let tab_bar = Flex::row()
+            let mut tab_bar = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(tab_bar.finish())
-                .with_child(search_bar_slot)
-                .with_child(right_controls.finish())
-                .finish();
+                .with_child(search_bar_slot);
+            if let Some(resources) = self.render_title_bar_resources(appearance, ctx) {
+                tab_bar.add_child(resources);
+            }
+            let tab_bar = tab_bar.with_child(right_controls.finish()).finish();
 
             return EventHandler::new(
                 Container::new(tab_bar)
@@ -22057,12 +22252,20 @@ impl Workspace {
             ChildView::new(&active_tab_data.pane_group).finish()
         };
 
-        let terminal_content = match self.maybe_render_workspace_banner(app, appearance) {
-            Some(banner_element) => Flex::column()
-                .with_child(banner_element)
-                .with_child(Shrinkable::new(1., active_content).finish())
-                .finish(),
-            None => active_content,
+        let identity_band = self.render_session_identity_band(appearance, app);
+        let banner = self.maybe_render_workspace_banner(app, appearance);
+        let terminal_content = if banner.is_none() && identity_band.is_none() {
+            active_content
+        } else {
+            let mut column = Flex::column();
+            if let Some(banner_element) = banner {
+                column.add_child(banner_element);
+            }
+            if let Some(identity_band) = identity_band {
+                column.add_child(identity_band);
+            }
+            column.add_child(Shrinkable::new(1., active_content).finish());
+            column.finish()
         };
 
         let vertical_tabs_active =
@@ -23413,6 +23616,27 @@ impl Workspace {
                 .set
                 .insert(flags::AUTO_OPEN_RICH_INPUT_ON_CLI_AGENT_START_FLAG);
         }
+        if *ai_settings.resume_cli_agents_on_restart.value() {
+            context.set.insert(flags::RESUME_CLI_AGENTS_ON_RESTART_FLAG);
+        }
+        for (value, flag) in [
+            (
+                ai_settings.cli_agent_sound_when_waiting.value(),
+                flags::CLI_AGENT_SOUND_WHEN_WAITING_FLAG,
+            ),
+            (
+                ai_settings.cli_agent_sound_when_finished.value(),
+                flags::CLI_AGENT_SOUND_WHEN_FINISHED_FLAG,
+            ),
+            (
+                ai_settings.cli_agent_sound_when_failed.value(),
+                flags::CLI_AGENT_SOUND_WHEN_FAILED_FLAG,
+            ),
+        ] {
+            if !value.trim().is_empty() {
+                context.set.insert(flag);
+            }
+        }
         if *ai_settings.auto_dismiss_rich_input_after_submit.value() {
             context
                 .set
@@ -23992,6 +24216,7 @@ impl TypedActionView for Workspace {
                 self.close_tabs_direction(self.active_tab_index, TabMovement::Right, false, ctx)
             }
             CloseTabGroup(group_id) => self.close_tab_group(*group_id, ctx),
+            ReopenSavedTabSet(name) => self.reopen_saved_tab_set(name, ctx),
             ToggleTabGroupCollapsed(group_id) => self.toggle_tab_group_collapsed(*group_id, ctx),
             RenameTabGroup(group_id) => self.rename_tab_group(*group_id, ctx),
             CancelActiveRename => {
@@ -24131,6 +24356,16 @@ impl TypedActionView for Workspace {
                 self.save_current_tab_as_new_config(*tab_index, ctx)
             }
             ToggleNewSessionMenu { anchor } => self.toggle_new_session_dropdown_menu(*anchor, ctx),
+            ToggleSessionResourcesPanel => {
+                session_signals_panel::toggle_resources_panel();
+                ctx.notify();
+            }
+            ToggleTabFinishChime(tab_index) => {
+                if let Some(tab) = self.tabs.get_mut(*tab_index) {
+                    tab.finish_chime = !tab.finish_chime;
+                    ctx.notify();
+                }
+            }
             SelectNewSessionMenuItem(new_session_menu_item) => {
                 self.open_launch_config_from_menu(new_session_menu_item.clone(), ctx)
             }
@@ -26808,6 +27043,33 @@ impl View for Workspace {
                     position,
                     ParentOffsetBounds::WindowByPosition,
                     ParentAnchor::TopLeft,
+                    ChildAnchor::TopLeft,
+                ),
+            );
+        }
+
+        if let Some(resources_panel) = self.render_session_resources_panel(appearance, app) {
+            stack.add_positioned_overlay_child(
+                resources_panel,
+                OffsetPositioning::offset_from_save_position_element(
+                    session_signals_panel::TITLE_BAR_RESOURCES_POSITION_ID,
+                    vec2f(0., 6.),
+                    PositionedElementOffsetBounds::WindowByPosition,
+                    PositionedElementAnchor::BottomRight,
+                    ChildAnchor::TopRight,
+                ),
+            );
+        }
+
+        if let Some((popover, counter_position_id)) = self.render_subagents_popover(appearance, app)
+        {
+            stack.add_positioned_overlay_child(
+                popover,
+                OffsetPositioning::offset_from_save_position_element(
+                    counter_position_id,
+                    vec2f(12., -16.),
+                    PositionedElementOffsetBounds::WindowByPosition,
+                    PositionedElementAnchor::TopRight,
                     ChildAnchor::TopLeft,
                 ),
             );
