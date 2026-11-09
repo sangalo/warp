@@ -327,6 +327,9 @@ fn dashed_border(color: ColorU) -> Border {
 /// Puts `signals`' badges at the top right of the tab at `tab_index`, its running subagents at the
 /// bottom right, and outlines it in the color of its strongest signal, pulsing while the tab waits
 /// on the user. `finish_chime` adds a speaker badge, since the toggle itself only shows on hover.
+///
+/// Badges are plain positioned children, not overlays: an overlay layer is not clipped, so inside
+/// the scrolling tab list a badge would stay painted after its card scrolled out of view.
 pub(super) fn decorate_tab_with_signals(
     content: Box<dyn Element>,
     tab_index: usize,
@@ -345,7 +348,7 @@ pub(super) fn decorate_tab_with_signals(
         content
     } else {
         let mut stack = Stack::new().with_child(content);
-        stack.add_positioned_overlay_child(
+        stack.add_positioned_child(
             subagents_ui::render_counter(tab_index, running_subagents, appearance),
             OffsetPositioning::offset_from_parent(
                 vec2f(
@@ -384,7 +387,7 @@ pub(super) fn decorate_tab_with_signals(
     match badges {
         Some(badges) => {
             let mut stack = Stack::new().with_child(outlined);
-            stack.add_positioned_overlay_child(
+            stack.add_positioned_child(
                 badges,
                 OffsetPositioning::offset_from_parent(
                     vec2f(-BADGE_INSET, BADGE_INSET),

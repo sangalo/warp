@@ -15,6 +15,7 @@ pub(crate) mod onboarding;
 pub(crate) mod openwarp_launch_modal;
 pub(crate) mod orchestration_launch_modal;
 pub(crate) mod right_panel;
+mod pacote_pr_band;
 mod session_identity_band;
 mod session_signals_panel;
 mod startup_directory;
@@ -3180,6 +3181,7 @@ impl Workspace {
         if !ctx.has_singleton_model::<SessionSignalsModel>() {
             ctx.add_singleton_model(SessionSignalsModel::new);
         }
+        pacote_pr_band::start_polling(ctx);
         ctx.subscribe_to_model(&SessionSignalsModel::handle(ctx), |me, _, event, ctx| {
             match event {
                 SessionSignalsEvent::ServerTick => me.observe_server_panes(ctx),
@@ -22253,20 +22255,25 @@ impl Workspace {
         };
 
         let identity_band = self.render_session_identity_band(appearance, app);
+        let pacote_pr_band = self.render_pacote_pr_band(appearance);
         let banner = self.maybe_render_workspace_banner(app, appearance);
-        let terminal_content = if banner.is_none() && identity_band.is_none() {
-            active_content
-        } else {
-            let mut column = Flex::column();
-            if let Some(banner_element) = banner {
-                column.add_child(banner_element);
-            }
-            if let Some(identity_band) = identity_band {
-                column.add_child(identity_band);
-            }
-            column.add_child(Shrinkable::new(1., active_content).finish());
-            column.finish()
-        };
+        let terminal_content =
+            if banner.is_none() && identity_band.is_none() && pacote_pr_band.is_none() {
+                active_content
+            } else {
+                let mut column = Flex::column();
+                if let Some(banner_element) = banner {
+                    column.add_child(banner_element);
+                }
+                if let Some(pacote_pr_band) = pacote_pr_band {
+                    column.add_child(pacote_pr_band);
+                }
+                if let Some(identity_band) = identity_band {
+                    column.add_child(identity_band);
+                }
+                column.add_child(Shrinkable::new(1., active_content).finish());
+                column.finish()
+            };
 
         let vertical_tabs_active =
             FeatureFlag::VerticalTabs.is_enabled() && *TabSettings::as_ref(app).use_vertical_tabs;
